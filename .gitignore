@@ -1,0 +1,14 @@
+# Trained models
+models/
+
+# Heavy files that the notebook creates again
+*.npy
+*.npz
+df_clean_crop_pests.csv
+
+# Dataset copied next to the notebook, it goes in the delivery zip, not in git
+Agricultural Pests Image Dataset/
+
+# Python and Jupyter
+__pycache__/
+.ipynb_checkpoints/
