@@ -1,7 +1,6 @@
 # Design Decisions
 
-Step-by-step record of methodological decisions for the agricultural pest image classification pipeline, with the rationale for each. Items marked *pending* are not yet decided.
-
+Step-by-step record of methodological decisions for the agricultural pest image classification pipeline, with the rationale for each.
 ## 1. Task and dataset
 - **Task:** multiclass image classification (12 classes: ants, bees, beetle, caterpillar, earthworms, earwig, grasshopper, moth, slug, snail, wasp, weevil).
 - **Dataset:** Agricultural Pests Image Dataset (Kaggle): https://www.kaggle.com/datasets/vencerlanz09/agricultural-pests-image-dataset
@@ -45,11 +44,10 @@ Step-by-step record of methodological decisions for the agricultural pest image 
   - **LBP:** 8 neighbors, radii 1, 2 and 3 (uniform, 10 codes each), histogram over a 4 x 4 grid (3 x 160 = 480 columns).
   - **Effect (validation, first version to current):** SVM macro F1 0.334 to 0.378; Random Forest 0.294 to 0.332. The gain was not separated between the HOG and the LBP changes.
 - **Classifiers:** SVM (RBF kernel, default parameters) and Random Forest (300 trees). Feature standardization is fitted on the training set only. Parallelism limited to 6 jobs.
-- **Hyperparameters:** not tuned (default SVM). Tuning `C` on the validation set is optional, only if time allows.
-- **Ablation:** not performed (HOG only, LBP only). Decision of the author; the course template asks for it, so this is an accepted risk.
+- **Hyperparameters:** not tuned. Default parameters for the SVM and 300 trees for the Random Forest.
+- **Ablation:** not performed (HOG only, LBP only). The features are used concatenated.
 - **Metrics:** accuracy, macro F1, confusion matrix on validation (SVM: accuracy 0.411, macro F1 0.378; Random Forest: 0.379 and 0.332). The SVM is the baseline for comparison with deep learning. The test set is evaluated once, in the final comparison.
 - **Error pattern (SVM, validation, values read from the confusion matrix):** best classes are bees and moth; worst are beetle (2 of about 62), slug (8 of about 59), earwig and caterpillar. Main confusions: wasp as bees, beetle as grasshopper, slug as earthworms and snail. Beetle is not a small class, so the errors come from visual similarity (shape and background), not from class size.
-- **Optional extension, pending:** hue/saturation histogram (excluding value) as a third feature group, only if time allows.
 
 ## 6. Data augmentation (deep learning only)
 - **Online** augmentation, applied to the training set only, with Albumentations. Validation and test images are not augmented. Online generation avoids storing augmented copies and shows new variations at every epoch (Krizhevsky et al., 2012, generated augmented images on the CPU during training, without storing them).
@@ -63,18 +61,23 @@ Step-by-step record of methodological decisions for the agricultural pest image 
 ## 7. Deep learning approach
 - **Framework:** Keras 3 with the PyTorch backend (GPU training with a single 12 GB GPU). The backend is set before importing Keras.
 - **Models:**
-  - A small CNN trained from scratch: a first convolution with stride 2 (32 filters) followed by 3 blocks of 2 convolutions (64, 128, 256 filters), each with batch normalization and max pooling, then global average pooling and dropout 0.4. Pixels are rescaled to [0, 1] inside the model. The stride-2 stem was added after a first version (4 blocks of 2 convolutions at full resolution) exhausted the 12 GB of GPU memory.
+  - A small CNN trained from scratch: a first convolution with stride 2 (32 filters) followed by 3 blocks of 2 convolutions (64, 128, 256 filters), each with batch normalization and max pooling, then global average pooling and dropout 0.4. Pixels are rescaled to [0, 1] inside the model. The stride-2 first convolution reduces memory use (a version with 4 blocks of 2 convolutions at full resolution used the whole 12 GB of GPU memory).
   - MobileNetV2 with ImageNet weights (transfer learning), pixels rescaled to [-1, 1] (same as its `preprocess_input`), global average pooling, dropout 0.3. First the feature extractor is frozen and only the classifier is trained; then the best configuration is fine-tuned (last 30 layers unfrozen, batch normalization layers kept frozen, learning rate 10x smaller).
-- **Memory and speed:** mixed precision (`mixed_float16`, output layer in float32); the last incomplete batch is dropped (3,841 images = 60 batches of 64 + 1); garbage collection and `torch.cuda.empty_cache()` after every epoch. Without the cleanup the GPU memory in use grew by about 1 GB per epoch (2.8 to 7.5 GB in 5 epochs), spilled into system memory and each epoch went from 15 s to more than 400 s. With the cleanup, the lighter CNN runs at about 4 s per epoch with a peak of about 1.5 GB (measured on the full training set, 10 epochs). Predictions use batches of 64.
+- **Memory and speed:** mixed precision (`mixed_float16`, output layer in float32); the last incomplete batch is dropped (3,841 images = 60 batches of 64 + 1); garbage collection and `torch.cuda.empty_cache()` after every epoch, because without it the GPU memory in use grew by about 1 GB per epoch and the training slowed down. With these changes the CNN runs at about 4 s per epoch with a peak of about 1.5 GB of GPU memory (measured on the full training set). Predictions use batches of 64.
 - **Training:** online augmentation through a `PyDataset` (2 CPU threads); class weights passed as sample weights; sparse categorical cross-entropy; `ReduceLROnPlateau` (factor 0.5, patience 3) and early stopping (patience 8, best weights restored) on the validation loss.
 - **Hyperparameter experiment (MobileNetV2, frozen):** (Adam, 1e-3, batch 64), (Adam, 1e-4, 64), (SGD with momentum 0.9, 1e-2, 64), (Adam, 1e-3, 32). The best one by validation macro F1 is the one fine-tuned. The CNN from scratch uses a single configuration (Adam, 1e-3, 64).
-- **Evaluation:** accuracy, macro precision, macro recall and macro F1 on train, validation and test for every model (traditional and deep learning), printed after each training and saved in `results_all_models.csv`. The test numbers are reported for all models, but the models are chosen using validation only. Comparison with the traditional baseline; qualitative error analysis (classification report, confusion matrix and misclassified examples of the best deep learning model).
-- **Ablation:** not performed. The course template asks for it only "whenever possible" in this step, and the assignment text does not mention it. The comparison between training from scratch and transfer learning is already covered by the two models. The effect of augmentation was therefore not measured separately.
+- **Evaluation:** accuracy, macro precision, macro recall and macro F1 on train, validation and test for every model (traditional and deep learning), shown in one table (with a short legend of the metrics) after each training and saved in `results_all_models.csv`. Macro averages give the same weight to each of the 12 classes, which suits the mild class imbalance. The test numbers are reported for all models, but the models are chosen using validation only. Comparison with the traditional baseline; qualitative error analysis of the best deep learning model on the validation set and, for the final report, on the test set (classification report, confusion matrix, 12 misclassified and 12 correctly classified images, with the model name and the number of correct and wrong predictions in the title). The test predictions are computed from the saved file of the best model.
+- **Results of the first full run (macro F1, validation / test):** SVM 0.378 / 0.371 (baseline); Random Forest 0.332 / 0.318; CNN from scratch 0.555 / 0.574 (it did not converge within 40 epochs); MobileNetV2 frozen 0.853 to 0.882 / 0.834 to 0.863 depending on the configuration; **MobileNetV2 fine-tuned 0.908 / 0.882 (best)**. The training is not exactly repeatable (augmentation threads and GPU), so the numbers can vary slightly between runs. The configurations of the frozen MobileNetV2 that reached the best validation F1 differ by less than 0.5 points, which is within the noise of a single run.
+- **Ablation:** not performed. The effect of augmentation was not measured separately. Training from scratch and transfer learning are compared through the two models.
 
 ## 8. Reproducibility
-- Fixed random seeds; stored split and extracted features.
-- The dataset path is configurable through a single variable.
-- The notebook is executed from start to end before export.
+- **Seeds:** fixed random seeds (split seed 14, Keras seed). The training of the deep learning models is not exactly repeatable, so small differences between runs are expected.
+- **Dataset path:** relative to the notebook. The folder `Agricultural Pests Image Dataset/` is expected next to the notebook, or another folder can be given through the environment variable `PEST_DATA_DIR`. There are no absolute paths in the code, and the cell fails with a clear message if the folder is missing. The dataset is delivered together with the notebook.
+- **Generated files:** everything the notebook creates is written to the working folder, which is the notebook folder: the split table (`df_clean_crop_pests.csv`), the resized images (`images_224_rgb.npy`), the scaled features (`features_traditional.npz`), the results table (`results_all_models.csv`) and the folder `models/`. The notebook does not read these files back, except the results table, so it can run from scratch in a clean folder (the results table must be removed first, otherwise old rows are kept).
+- **Saved models:** deep learning models as `.keras` and the SVM, the Random Forest and the scaler as `.joblib`, all in `models/`, so that the results can be generated locally and inspected later.
+- **Version control:** `.gitignore` excludes `models/`, `*.npy`, `*.npz`, the split table and the dataset folder; the results table is versioned.
+- **Notebook organization:** it follows the order of the report template (Sections 1 to 8, Digest and References). All imports are in the first code cell, grouped in blocks. The Keras backend (`torch`) is set in that cell before `keras` is imported.
+- **Execution:** the notebook is executed from start to end in a clean folder before export. The deep learning part takes about 20 minutes on a 12 GB GPU.
 
 ## References
 - Buslaev, A., Parinov, A., Khvedchenya, E., Iglovikov, V. I. and Kalinin, A. A. (2018). *Albumentations: fast and flexible image augmentations.* arXiv:1809.06839.
